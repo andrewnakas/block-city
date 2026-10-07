@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Block City</title>
+  <style>html,body{margin:0;height:100%;background:#0d0f14;color:#8b93a3;font:15px system-ui,sans-serif;display:grid;place-items:center}</style>
+</head>
+<body>
+  <p id="msg">Checking your browser's graphics…</p>
+  <script>
+    // WebGPU browsers get the high-quality build (physical sky, SSAO, TAA);
+    // everyone else gets the WebGL2 build.
+    (async () => {
+      let gpu = false;
+      try { gpu = !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch (e) {}
+      const q = new URLSearchParams(location.search).get('renderer');
+      if (q === 'gl') gpu = false;
+      if (q === 'gpu') gpu = true;
+      location.replace((gpu ? 'gpu/' : 'gl/') + location.search + location.hash);
+    })();
+  </script>
+</body>
+</html>

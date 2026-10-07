@@ -1,0 +1,126 @@
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo test --locked
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Build WebGL2 and WebGPU variants
+        run: |
+          trunk build --release --dist dist/gl --public-url ./ index.html
+          trunk build --release --dist dist/gpu --public-url ./ index-gpu.html
+          cp web/loader.html dist/index.html
+      - name: Sizes
+        run: du -sh dist/gl dist/gpu && ls -la dist/gl/*.wasm dist/gpu/*.wasm
+      - name: Stage site
+        run: |
+          cp -r dist site
+          touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Zip web build
+        if: startsWith(github.ref, 'refs/tags/')
+        run: cd dist && zip -qr ../block-city-web.zip .
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: block-city-web
+          path: block-city-web.zip
+
+  pages:
+    # The web build ships even if a unit test is red; native releases still wait for tests.
+    needs: web
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  native:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux-x64, bin: block_city }
+          - { os: windows-latest, name: windows-x64, bin: block_city.exe }
+          - { os: macos-latest, name: macos-arm64, bin: block_city }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p pkg/block-city
+          cp target/release/${{ matrix.bin }} pkg/block-city/
+          cp -r assets README.md pkg/block-city/
+          cd pkg && 7z a -bd ../block-city-${{ matrix.name }}.zip block-city >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: block-city-${{ matrix.name }}
+          path: block-city-${{ matrix.name }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [web, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.zip
+          generate_release_notes: true
